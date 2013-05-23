@@ -1,16 +1,52 @@
 <?php
 
+/**
+ * @file
+ * Importer class implementations.
+ */
+
 class USCMIRCBatchImporter extends ZipBatchImporter {
   protected $itemClass = 'USCMIRCBatchImportObject';
 
+  /**
+   * {@inheritdoc}
+   */
   public static function getForm(array &$form_state) {
-    // TODO: First time around, make a single file upload.
+    // Make a single file upload.
+    return array(
+      'fs' => array(
+        '#type' => 'fieldset',
+        '#title' => t('PBCore Batch Importer'),
+        '#description' => t('Select the file containing the metadata to import.'),
+        'file' => array(
+          '#type' => 'managed_file',
+          '#title' => t('Zip file containing files to import'),
+          '#upload_validators' => array(
+            'file_validate_extensions' => array('zip'),
+          ),
+        ),
+        'submit' => array(
+          '#type' => 'submit',
+          '#value' => t('Import'),
+        ),
+      ),
+    );
   }
 
+  /**
+   * {@inheritdoc}
+   */
   public static function readyForBatch(array &$form_state) {
-    // TODO: Got a file?
+    // Got a file?
+    if (empty($form_state['values']['file'])) {
+      form_set_error('file', t('Need a Zip file!'));
+      return FALSE;
+    }
   }
 
+  /**
+   * {@inheritdoc}
+   */
   public static function getBatchInfo(array &$form_state) {
     $file = file_load($form_state['values']['file']);
     return array(
@@ -23,31 +59,35 @@ class USCMIRCBatchImporter extends ZipBatchImporter {
   }
 
   /**
-   * XXX: Some shenanigans to avoid burning identifiers...
+   * Get an ID, with some shenanigans to avoid wasting identifiers.
+   *
+   * @see IslandoraBatchImporter::getIdentifier()
    */
-  protected function getIdentifier() {
-    $batch = batch_get();
-    $batch_id = $batch['id'];
-    $cache_id = 'usc_mirc_importer_pid_cache';
-    $cached = variable_get($cache_id, FALSE);
-    if ($cached) {
-      variable_del($cache_id);
-      return $cached->data;
+  protected function getIdentifier(IslandoraTuque $tuque) {
+    $pid = NULL;
+
+    if (isset($this->context['sandbox']['pid'])) {
+      $object = islandora_object_load($this->context['sandbox']['pid']);
+      if (!$object) {
+        // The object failed to load, likely due to it not existing...
+        // Requiring an ID to be provided to writeToFedora() seemed like a good
+        // idea at the time. :P
+        $pid = $this->context['sandbox']['pid'];
+      }
     }
-    else {
-      return $tuque->api->m->getNextPid($item->pidNamespace);
+
+    if (!$pid) {
+      $pid = $this->context['sandbox']['pid'] = $tuque->repository->api->m->getNextPid($this->pidNamespace);
     }
+
+    return $pid;
   }
 }
 
 class USCMIRCBatchImportObject extends ZipBatchImportObject {
-  protected $contentModel;
-
-  protected function __construct($source) {
-    $this->contentModel = variable_get('usc_mirc_cmodel_vro', 'usc:vroCModel');
-    parent::__construct($source);
-  }
-
+  /**
+   * {@inheritdoc}
+   */
   public function getTitle() {
     // Get the title for this object (From the PBCore?).
     if ($this->title === NULL) {
@@ -70,9 +110,7 @@ class USCMIRCBatchImportObject extends ZipBatchImportObject {
   }
 
   /**
-   * Get the datastream structure.
-   *
-   * @see IslandoraImportObject::getDatastreams()
+   * {@inheritdoc}
    */
   protected function getDatastreams(&$errors = NULL, &$files = NULL) {
     // Get PBCore and DC datastreams.
@@ -160,10 +198,7 @@ class USCMIRCBatchImportObject extends ZipBatchImportObject {
   }
 
   /**
-   * "Lazily" transform the PBCore to DC.
-   *
-   * @return string
-   *   A string containing XML representing the transformed PBCore.
+   * {@inheritdoc}
    */
   protected function getDC() {
     if ($this->dc === NULL) {
@@ -228,6 +263,9 @@ EOQ;
     return FALSE;
   }
 
+  /**
+   * {@inheritdoc}
+   */
   public function writeToFedora($pid, $parent_pid = NULL) {
     $report = array();
 
@@ -236,24 +274,18 @@ EOQ;
 
     if ($object) {
       // If it does, update the PBCore and DC on the existing object.
-      // XXX: Save the id for later...
-      variable_set('usc_mirc_importer_pid_cache', $pid);
       $object['PBCORE']->content = $this->getPBCore();
       $object['DC']->content = $this->getDC();
     }
     else {
       // If it does not, create a new object (as per the parent
       // implementation?).
-
       // An array of Drupal file objects to clean up after ingest.
       $files = array();
 
       $label = $this->getTitle();
       $datastreams = $this->getDatastreams($report, $files);
       $relationships = array();
-      $collection_pid = NULL;
-
-      $files = array();
 
       $content_models = array_unique((array) $this->contentModel);
 
