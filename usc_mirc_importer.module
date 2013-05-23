@@ -1,0 +1,18 @@
+<?php
+
+/**
+ * @file
+ * Defines all the hooks this module implements.
+ */
+
+/**
+ * Implements hook_islandora_importer().
+ */
+function usc_mirc_importer_islandora_importer() {
+  return array(
+    'usc_mirc_importer' => array(
+      'title' => t('USC MIRC Batch Importer'),
+      'class' => 'USCMIRCBatchImporter',
+    ),
+  );
+}

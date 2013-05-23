@@ -1,0 +1,7 @@
+name = MIRC@SC Batch Importer
+description = Module to allow imports/merges of Preservation Master PBCore Description Documents.
+dependencies[] = zip_importer
+package = MIRC@SC
+version = 7.x-dev
+core = 7.x
+files[] = includes/importer.inc
