@@ -64,21 +64,21 @@ class USCMIRCBatchImporter extends ZipBatchImporter {
    *
    * @see IslandoraBatchImporter::getIdentifier()
    */
-  protected function getIdentifier(IslandoraTuque $tuque) {
+  protected function getIdentifier(IslandoraTuque $tuque, $namespace) {
     $pid = NULL;
 
-    if (isset($this->context['sandbox']['pid'])) {
-      $object = islandora_object_load($this->context['sandbox']['pid']);
+    if (isset($this->context['sandbox']['pid'][$namespace])) {
+      $object = islandora_object_load($this->context['sandbox']['pid'][$namespace]);
       if (!$object) {
         // The object failed to load, likely due to it not existing...
         // Requiring an ID to be provided to writeToFedora() seemed like a good
         // idea at the time. :P
-        $pid = $this->context['sandbox']['pid'];
+        $pid = $this->context['sandbox']['pid'][$namespace];
       }
     }
 
     if (!$pid) {
-      $pid = $this->context['sandbox']['pid'] = $tuque->repository->api->m->getNextPid($this->pidNamespace);
+      $pid = $this->context['sandbox']['pid'][$namespace] = $tuque->repository->api->m->getNextPid($namespace);
     }
 
     return $pid;
@@ -96,6 +96,10 @@ class USCMIRCBatchImportObject extends ZipBatchImportObject {
     if ($this->title === NULL) {
       $s_xml = $this->getPBCoreSimpleXMLElement();
       $titles = $s_xml->xpath('/pb:pbcoreDescriptionDocument/pb:pbcoreTitle[@titleType="Main"]');
+      if ($titles) {
+        $title = reset($titles);
+        $this->title = (string) $title;
+      }
     }
 
     return $this->title;
@@ -178,7 +182,7 @@ class USCMIRCBatchImportObject extends ZipBatchImportObject {
    */
   protected function getPBCoreSimpleXMLElement() {
     if ($this->pbcore_simplexmlelement === NULL) {
-      $this->pbcore_simplexmlelement = new SimpleXMLElement($this->getPBCore());
+      @$this->pbcore_simplexmlelement = new SimpleXMLElement($this->getPBCore());
       $this->pbcore_simplexmlelement->registerXPathNamespace('pb', 'http://www.pbcore.org/PBCore/PBCoreNamespace.html');
     }
 
@@ -190,11 +194,16 @@ class USCMIRCBatchImportObject extends ZipBatchImportObject {
    */
   protected function getMungeKey() {
     if ($this->munge_key === NULL) {
-      $s_xml = $this->getPBCoreSimpleXMLElement();
-      $keys = $s_xml->xpath('/pb:pbcoreDescriptionDocument/pb:pbcoreIdentifier[@source="munge_fm_key"]');
-      if ($keys) {
-        $key = reset($keys);
-        $this->munge_key = (string) $key;
+      try {
+        $s_xml = $this->getPBCoreSimpleXMLElement();
+        $keys = $s_xml->xpath('/pb:pbcoreDescriptionDocument/pb:pbcoreIdentifier[@source="munge_fm_key"]');
+        if ($keys) {
+          $key = reset($keys);
+          $this->munge_key = (string) $key;
+        }
+      }
+      catch (Exception $e) {
+        // Squash...
       }
     }
 
@@ -225,10 +234,11 @@ class USCMIRCBatchImportObject extends ZipBatchImportObject {
    *   The loaded object, or boolean FALSE if we could not find a match.
    */
   protected function mungeKeyExists(&$errors = NULL) {
-    $key = $this->getMungeKey();
-    $model = reset($this->contentModel);
+    $content_model = reset($this->contentModel);
 
-    $query = <<<EOQ
+    $key = $this->getMungeKey();
+    if ($key) {
+      $query = <<<EOQ
 SELECT ?object ?date
 WHERE {
   ?object <dc:identifier> "$key" ;
@@ -239,30 +249,31 @@ WHERE {
 ORDER BY ?date
 EOQ;
 
-    $tuque = islandora_get_tuque_connection();
+      $tuque = islandora_get_tuque_connection();
 
-    $results = $tuque->repository->ri->sparqlQuery($query);
-    $num_results = count($results);
+      $results = $tuque->repository->ri->sparqlQuery($query);
+      $num_results = count($results);
 
-    if ($num_results > 0) {
-      $result = reset($results);
-      $pid = $result['object']['value'];
+      if ($num_results > 0) {
+        $result = reset($results);
+        $pid = $result['object']['value'];
 
-      if ($num_results > 1) {
-        $errors[] = array(
-          t('Multiple object with key "@key". Only changing the first (by date; @pid).'),
-          array(
-            '@key' => $key,
-            '@pid' => $pid,
-          ),
-          WATCHDOG_WARNING,
-          l($pid, "islandora/object/$pid"),
-        );
-      }
+        if ($num_results > 1) {
+          $errors[] = array(
+            t('Multiple objects with key "@key". Only changing the first (by date; @pid).'),
+            array(
+              '@key' => $key,
+              '@pid' => $pid,
+            ),
+            WATCHDOG_WARNING,
+            l($pid, "islandora/object/$pid"),
+          );
+        }
 
-      $object = islandora_object_load($pid);
-      if ($object) {
-        return $object;
+        $object = islandora_object_load($pid);
+        if ($object) {
+          return $object;
+        }
       }
     }
 
@@ -281,15 +292,33 @@ EOQ;
     if ($object) {
       // If it does, update the PBCore and DC on the existing object.
       try {
-        $this->getPBCoreSimpleXMLElement();
+        $object->label = $this->getTitle();
         $object['PBCORE']->content = $this->getPBCore();
         $object['DC']->content = $this->getDC();
+        $report[] = array(
+          t('Successfully updated @pid for "@key".'),
+          array(
+            '@pid' => $object->id,
+            '@key' => $this->getMungeKey(),
+          ),
+          WATCHDOG_INFO,
+          l($object->id, "islandora/object/{$object->id}"),
+        );
       }
       catch (Exception $e) {
         $report[] = array(
           '%type: !message in %function (line %line of %file).',
           _drupal_decode_exception($e),
+          WATCHDOG_WARNING,
+        );
+        $report[] = array(
+          'Failed updating @pid from %file.',
+          array(
+            '@pid' => $object->id,
+            '%file' => $this->source['object_info']['xml'],
+          ),
           WATCHDOG_ERROR,
+          l($object->id, "islandora/object/{$object->id}"),
         );
       }
     }
@@ -299,8 +328,8 @@ EOQ;
       // An array of Drupal file objects to clean up after ingest.
       $files = array();
 
-      $label = $this->getTitle();
       try {
+        $label = $this->getTitle();
         $datastreams = $this->getDatastreams($report, $files);
 
         $relationships = array();
@@ -317,11 +346,33 @@ EOQ;
                   $datastreams, $content_models, $relationships, $collection_pid);
 
         $object = islandora_add_object($object);
+
+        $parent = islandora_object_load($collection_pid);
+        if (isset($parent['POLICY']) && !isset($object['POLICY'])) {
+          $object->ingestDatastream($parent['POLICY']);
+        }
+
+        $report[] = array(
+          t('Successfully created @pid for "@key".'),
+          array(
+            '@pid' => $object->id,
+            '@key' => $this->getMungeKey(),
+          ),
+          WATCHDOG_INFO,
+          l($object->id, "islandora/object/{$object->id}"),
+        );
       }
       catch (Exception $e) {
         $report[] = array(
           '%type: !message in %function (line %line of %file).',
           _drupal_decode_exception($e),
+          WATCHDOG_WARNING,
+        );
+        $report[] = array(
+          'Failed creating new object from %file.',
+          array(
+            '%file' => $this->source['object_info']['xml'],
+          ),
           WATCHDOG_ERROR,
         );
       }
