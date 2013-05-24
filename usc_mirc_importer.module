@@ -52,6 +52,9 @@ function usc_mirc_importer_access_callback(AbstractObject $object) {
     in_array('usc:collectionCModel', $object->models);
 }
 
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
 function usc_mirc_importer_form_islandora_importer_form_alter(&$form, &$form_state) {
   if (array_key_exists('importer', $form) && in_array('usc:collectionCModel', $form_state['build_info']['args'][0]->models)) {
     $good_one = drupal_map_assoc(array('usc_mirc_importer'));

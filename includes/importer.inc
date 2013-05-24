@@ -86,7 +86,9 @@ class USCMIRCBatchImporter extends ZipBatchImporter {
 }
 
 class USCMIRCBatchImportObject extends ZipBatchImportObject {
-  protected $munge_key, $pbcore, $pbcore_simplexmlelement;
+  protected $mungeKey;
+  protected $pbcore;
+  protected $pbcoreSimpleXMLElement;
 
   /**
    * {@inheritdoc}
@@ -181,25 +183,25 @@ class USCMIRCBatchImportObject extends ZipBatchImportObject {
    *   Throws an Exception if the XML fails to parse.
    */
   protected function getPBCoreSimpleXMLElement() {
-    if ($this->pbcore_simplexmlelement === NULL) {
-      @$this->pbcore_simplexmlelement = new SimpleXMLElement($this->getPBCore());
-      $this->pbcore_simplexmlelement->registerXPathNamespace('pb', 'http://www.pbcore.org/PBCore/PBCoreNamespace.html');
+    if ($this->pbcoreSimpleXMLElement === NULL) {
+      @$this->pbcoreSimpleXMLElement = new SimpleXMLElement($this->getPBCore());
+      $this->pbcoreSimpleXMLElement->registerXPathNamespace('pb', 'http://www.pbcore.org/PBCore/PBCoreNamespace.html');
     }
 
-    return $this->pbcore_simplexmlelement;
+    return $this->pbcoreSimpleXMLElement;
   }
 
   /**
    * Get the munge_fm_key identifier.
    */
   protected function getMungeKey() {
-    if ($this->munge_key === NULL) {
+    if ($this->mungeKey === NULL) {
       try {
         $s_xml = $this->getPBCoreSimpleXMLElement();
         $keys = $s_xml->xpath('/pb:pbcoreDescriptionDocument/pb:pbcoreIdentifier[@source="munge_fm_key"]');
         if ($keys) {
           $key = reset($keys);
-          $this->munge_key = (string) $key;
+          $this->mungeKey = (string) $key;
         }
       }
       catch (Exception $e) {
@@ -207,7 +209,7 @@ class USCMIRCBatchImportObject extends ZipBatchImportObject {
       }
     }
 
-    return $this->munge_key;
+    return $this->mungeKey;
   }
 
   /**
@@ -281,23 +283,63 @@ EOQ;
   }
 
   /**
+   * Convenience function to update and get the values for substitution.
+   *
+   * @param array $sandbox
+   *   The $context['sandbox'] array, where we'll keep our stats.
+   * @param string|bool $type_to_increment
+   *   Either a boolean FALSE to just get the counts without incrementing, or
+   *   a string indicating which value to update in the set:
+   *   - "updated": An integer containing the running count of the number of
+   *     records updated.
+   *   - "created": An integer containing the running count of the number of
+   *     records created.
+   *
+   * @return array
+   *   An associative array containing placeholder substitutions for
+   *   format_string() and associated functions:
+   *   - "@updated": The number updated.
+   *   - "@created": The number created.
+   *   - "@total": The sum of the number updated and created.
+   */
+  protected function getCounts(&$sandbox, $type_to_increment = FALSE) {
+    if (!isset($sandbox['counts'])) {
+      $sandbox['counts'] = array(
+        'updated' => 0,
+        'created' => 0,
+      );
+    }
+
+    if ($type) {
+      $sandbox['counts'][$type_to_increment]++;
+    }
+
+    return array(
+      '@updated' => $sandbox['counts']['updated'],
+      '@created' => $sandbox['counts']['created'],
+      '@total' => array_sum($sandbox['counts']),
+    );
+  }
+
+  /**
    * {@inheritdoc}
    */
-  public function writeToFedora($pid, $parent_pid = NULL) {
+  public function writeToFedora($pid, $parent_pid, &$sandbox) {
     $report = array();
 
     // Check if the object exists, based on the munge key.
     $object = $this->mungeKeyExists($report);
 
-    if ($object) {
-      // If it does, update the PBCore and DC on the existing object.
+    if ($this->getMungeKey() && $object) {
+      // If it does exist, and we actually had a key to match, update the
+      // label, PBCore and DC on the existing object.
       try {
         $object->label = $this->getTitle();
         $object['PBCORE']->content = $this->getPBCore();
         $object['DC']->content = $this->getDC();
         $report[] = array(
-          t('Successfully updated @pid for "@key".'),
-          array(
+          t('(@created/@updated/@total) Successfully updated @pid for "@key".'),
+          $this->incrementAndGetCounts($sandbox, 'updated') + array(
             '@pid' => $object->id,
             '@key' => $this->getMungeKey(),
           ),
@@ -312,8 +354,8 @@ EOQ;
           WATCHDOG_WARNING,
         );
         $report[] = array(
-          'Failed updating @pid from %file.',
-          array(
+          t('(@created/@updated/@total) Failed updating @pid from %file.'),
+          $this->incrementAndGetCounts($sandbox, 'updated') + array(
             '@pid' => $object->id,
             '%file' => $this->source['object_info']['xml'],
           ),
@@ -352,15 +394,29 @@ EOQ;
           $object->ingestDatastream($parent['POLICY']);
         }
 
-        $report[] = array(
-          t('Successfully created @pid for "@key".'),
-          array(
-            '@pid' => $object->id,
-            '@key' => $this->getMungeKey(),
-          ),
-          WATCHDOG_INFO,
-          l($object->id, "islandora/object/{$object->id}"),
-        );
+        if ($this->getMungeKey()) {
+          $report[] = array(
+            t('(@created/@updated/@total) Successfully created @pid for "@key" from %file.'),
+            $this->incrementAndGetCounts($sandbox, 'created') + array(
+              '@pid' => $object->id,
+              '@key' => $this->getMungeKey(),
+              '%file' => $this->source['object_info']['xml'],
+            ),
+            WATCHDOG_INFO,
+            l($object->id, "islandora/object/{$object->id}"),
+          );
+        }
+        else {
+          $report[] = array(
+            t('(@created/@updated/@total) Created @pid for %file, which is missing a munge key.'),
+            $this->incrementAndGetCounts($sandbox, 'created') + array(
+              '@pid' => $object->id,
+              '%file' => $this->source['object_info']['xml'],
+            ),
+            WATCHDOG_WARNING,
+            l($object->id, "islandora/object/{$object->id}"),
+          );
+        }
       }
       catch (Exception $e) {
         $report[] = array(
@@ -369,8 +425,8 @@ EOQ;
           WATCHDOG_WARNING,
         );
         $report[] = array(
-          'Failed creating new object from %file.',
-          array(
+          t('(@created/@updated/@total) Failed creating new object from %file.'),
+          $this->incrementAndGetCounts($sandbox, 'created') + array(
             '%file' => $this->source['object_info']['xml'],
           ),
           WATCHDOG_ERROR,
