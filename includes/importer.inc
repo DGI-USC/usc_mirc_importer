@@ -42,6 +42,7 @@ class USCMIRCBatchImporter extends ZipBatchImporter {
       form_set_error('file', t('Need a Zip file!'));
       return FALSE;
     }
+    return TRUE;
   }
 
   /**
@@ -53,7 +54,7 @@ class USCMIRCBatchImporter extends ZipBatchImporter {
       'file' => $file,
       'pid_namespace' => 'usc',
       'content_model' => array(variable_get('usc_mirc_cmodel_vro', 'usc:vroCModel')),
-      'object_info' => self::getIngestInfo($file),
+      'object_info' => static::getIngestInfo($file),
       'processed_object' => array(),
     );
   }
@@ -85,25 +86,16 @@ class USCMIRCBatchImporter extends ZipBatchImporter {
 }
 
 class USCMIRCBatchImportObject extends ZipBatchImportObject {
+  protected $munge_key, $pbcore, $pbcore_simplexmlelement;
+
   /**
    * {@inheritdoc}
    */
   public function getTitle() {
     // Get the title for this object (From the PBCore?).
     if ($this->title === NULL) {
-      $pbcore = $this->getPBCore();
-
-      if ($pbcore) {
-        $s_xml = new SimpleXMLElement($pbcore);
-        if ($s_xml) {
-          $s_xml->registerXPathNamespace('pb', 'http://www.pbcore.org/PBCore/PBCoreNamespace.html');
-          $titles = $s_xml->xpath('/pb:pbcoreDescriptionDocument/pb:pbcoreTitle[@titleType="Main"]');
-          if ($titles) {
-            $title = reset($titles);
-            $this->title = (string) $title;
-          }
-        }
-      }
+      $s_xml = $this->getPBCoreSimpleXMLElement();
+      $titles = $s_xml->xpath('/pb:pbcoreDescriptionDocument/pb:pbcoreTitle[@titleType="Main"]');
     }
 
     return $this->title;
@@ -160,7 +152,7 @@ class USCMIRCBatchImportObject extends ZipBatchImportObject {
   /**
    * Grab the XML, assuming that it's PBCore.
    */
-  protected function getPBCore() {
+  public function getPBCore() {
     // Get/generate the PBCore text.
     if ($this->pbcore === NULL) {
       if (isset($this->source['object_info']['xml'])) {
@@ -175,22 +167,34 @@ class USCMIRCBatchImportObject extends ZipBatchImportObject {
   }
 
   /**
+   * Get the PBCore as a SimpleXMLElement.
+   *
+   * @return SimpleXMLElement
+   *   A SimpleXMLElement representing the given PBCore, with the XPath prefix
+   *   already registered for convenience.
+   *
+   * @throws Exception
+   *   Throws an Exception if the XML fails to parse.
+   */
+  protected function getPBCoreSimpleXMLElement() {
+    if ($this->pbcore_simplexmlelement === NULL) {
+      $this->pbcore_simplexmlelement = new SimpleXMLElement($this->getPBCore());
+      $this->pbcore_simplexmlelement->registerXPathNamespace('pb', 'http://www.pbcore.org/PBCore/PBCoreNamespace.html');
+    }
+
+    return $this->pbcore_simplexmlelement;
+  }
+
+  /**
    * Get the munge_fm_key identifier.
    */
   protected function getMungeKey() {
     if ($this->munge_key === NULL) {
-      $pbcore = $this->getPBCore();
-
-      if ($pbcore) {
-        $s_xml = new SimpleXMLElement($pbcore);
-        if ($s_xml) {
-          $s_xml->registerXPathNamespace('pb', 'http://www.pbcore.org/PBCore/PBCoreNamespace.html');
-          $keys = $s_xml->xpath('/pb:pbcoreDescriptionDocument/pb:pbcoreIdentifier[@source="munge_fm_key"]');
-          if ($keys) {
-            $key = reset($keys);
-            $this->munge_key = (string) $key;
-          }
-        }
+      $s_xml = $this->getPBCoreSimpleXMLElement();
+      $keys = $s_xml->xpath('/pb:pbcoreDescriptionDocument/pb:pbcoreIdentifier[@source="munge_fm_key"]');
+      if ($keys) {
+        $key = reset($keys);
+        $this->munge_key = (string) $key;
       }
     }
 
@@ -200,9 +204,9 @@ class USCMIRCBatchImportObject extends ZipBatchImportObject {
   /**
    * {@inheritdoc}
    */
-  protected function getDC() {
+  public function getDC() {
     if ($this->dc === NULL) {
-      $new_dc = self::runXSLTransform(array(
+      $new_dc = static::runXSLTransform(array(
                   'xsl' => drupal_get_path('module', 'usc_mirc') . '/transforms/pbcore_to_dc.xsl',
                   'input' => $this->getPBCore(),
                 ));
@@ -222,11 +226,13 @@ class USCMIRCBatchImportObject extends ZipBatchImportObject {
    */
   protected function mungeKeyExists(&$errors = NULL) {
     $key = $this->getMungeKey();
+    $model = reset($this->contentModel);
 
     $query = <<<EOQ
 SELECT ?object ?date
 WHERE {
   ?object <dc:identifier> "$key" ;
+          <fedora-model:hasModel> <info:fedora/$content_model> ;
           <fedora-model:state> <fedora-model:Active> ;
           <fedora-model:createdDate> ?date .
 }
@@ -274,8 +280,18 @@ EOQ;
 
     if ($object) {
       // If it does, update the PBCore and DC on the existing object.
-      $object['PBCORE']->content = $this->getPBCore();
-      $object['DC']->content = $this->getDC();
+      try {
+        $this->getPBCoreSimpleXMLElement();
+        $object['PBCORE']->content = $this->getPBCore();
+        $object['DC']->content = $this->getDC();
+      }
+      catch (Exception $e) {
+        $report[] = array(
+          '%type: !message in %function (line %line of %file).',
+          _drupal_decode_exception($e),
+          WATCHDOG_ERROR,
+        );
+      }
     }
     else {
       // If it does not, create a new object (as per the parent
@@ -284,21 +300,31 @@ EOQ;
       $files = array();
 
       $label = $this->getTitle();
-      $datastreams = $this->getDatastreams($report, $files);
-      $relationships = array();
+      try {
+        $datastreams = $this->getDatastreams($report, $files);
 
-      $content_models = array_unique((array) $this->contentModel);
+        $relationships = array();
 
-      $collection_pid = $parent_pid;
-      $relationships[] = array(
-        'relationship' => 'isMemberOfCollection',
-        'pid' => $parent_pid,
-      );
-      module_load_include('inc', 'islandora', 'includes/utilities');
-      $object = islandora_prepare_new_object($pid, $label,
-                $datastreams, $content_models, $relationships, $collection_pid);
+        $content_models = array_unique((array) $this->contentModel);
 
-      $object = islandora_add_object($object);
+        $collection_pid = $parent_pid;
+        $relationships[] = array(
+          'relationship' => 'isMemberOfCollection',
+          'pid' => $parent_pid,
+        );
+        module_load_include('inc', 'islandora', 'includes/utilities');
+        $object = islandora_prepare_new_object($pid, $label,
+                  $datastreams, $content_models, $relationships, $collection_pid);
+
+        $object = islandora_add_object($object);
+      }
+      catch (Exception $e) {
+        $report[] = array(
+          '%type: !message in %function (line %line of %file).',
+          _drupal_decode_exception($e),
+          WATCHDOG_ERROR,
+        );
+      }
 
       foreach ($files as $file) {
         if ($file) {
