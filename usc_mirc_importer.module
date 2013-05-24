@@ -5,6 +5,10 @@
  * Defines all the hooks this module implements.
  */
 
+// Path where we'll register the path, and play with the options so as not to
+// render those which don't make sense.
+define('USC_MIRC_IMPORTER_PATH', 'islandora/object/%islandora_object/manage/usc_mirc_batch_import');
+
 /**
  * Implements hook_islandora_importer().
  */
@@ -15,4 +19,43 @@ function usc_mirc_importer_islandora_importer() {
       'class' => 'USCMIRCBatchImporter',
     ),
   );
+}
+
+/**
+ * Implements hook_menu().
+ */
+function usc_mirc_importer_menu() {
+  $items = array();
+
+  $items[USC_MIRC_IMPORTER_PATH] = array(
+    'title' => 'Batch import PBCore',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('islandora_importer_form', 2),
+    'access callback' => 'usc_mirc_importer_access_callback',
+    'access arguments' => array(2),
+    'type' => MENU_LOCAL_ACTION,
+  );
+
+  return $items;
+}
+
+/**
+ * Access callback.
+ *
+ * Needs to be an admin (to be able to update things with XACML) and one of our
+ * special collection objects.
+ */
+function usc_mirc_importer_access_callback(AbstractObject $object) {
+  global $user;
+
+  return ($user->uid === 1 || in_array('administrator', $user->roles)) &&
+    in_array('usc:collectionCModel', $object->models);
+}
+
+function usc_mirc_importer_form_islandora_importer_form_alter(&$form, &$form_state) {
+  if (array_key_exists('importer', $form) && in_array('usc:collectionCModel', $form_state['build_info']['args'][0]->models)) {
+    $good_one = drupal_map_assoc(array('usc_mirc_importer'));
+    $form['importer']['#options'] = array_intersect_key($form['importer']['#options'], $good_one);
+    $form_state['storage']['options'] = array_intersect_key($form_state['storage']['options'], $good_one);
+  }
 }
