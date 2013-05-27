@@ -426,7 +426,7 @@ EOQ;
         );
         $report[] = array(
           t('(@created/@updated/@total) Failed creating new object from %file.'),
-          $this->etCounts($sandbox, 'created') + array(
+          $this->getCounts($sandbox, 'created') + array(
             '%file' => $this->source['object_info']['xml'],
           ),
           WATCHDOG_ERROR,
