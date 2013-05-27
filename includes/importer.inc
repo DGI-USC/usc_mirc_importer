@@ -339,7 +339,7 @@ EOQ;
         $object['DC']->content = $this->getDC();
         $report[] = array(
           t('(@created/@updated/@total) Successfully updated @pid for "@key".'),
-          $this->incrementAndGetCounts($sandbox, 'updated') + array(
+          $this->getCounts($sandbox, 'updated') + array(
             '@pid' => $object->id,
             '@key' => $this->getMungeKey(),
           ),
@@ -355,7 +355,7 @@ EOQ;
         );
         $report[] = array(
           t('(@created/@updated/@total) Failed updating @pid from %file.'),
-          $this->incrementAndGetCounts($sandbox, 'updated') + array(
+          $this->getCounts($sandbox, 'updated') + array(
             '@pid' => $object->id,
             '%file' => $this->source['object_info']['xml'],
           ),
@@ -397,7 +397,7 @@ EOQ;
         if ($this->getMungeKey()) {
           $report[] = array(
             t('(@created/@updated/@total) Successfully created @pid for "@key" from %file.'),
-            $this->incrementAndGetCounts($sandbox, 'created') + array(
+            $this->getCounts($sandbox, 'created') + array(
               '@pid' => $object->id,
               '@key' => $this->getMungeKey(),
               '%file' => $this->source['object_info']['xml'],
@@ -409,7 +409,7 @@ EOQ;
         else {
           $report[] = array(
             t('(@created/@updated/@total) Created @pid for %file, which is missing a munge key.'),
-            $this->incrementAndGetCounts($sandbox, 'created') + array(
+            $this->getCounts($sandbox, 'created') + array(
               '@pid' => $object->id,
               '%file' => $this->source['object_info']['xml'],
             ),
@@ -426,7 +426,7 @@ EOQ;
         );
         $report[] = array(
           t('(@created/@updated/@total) Failed creating new object from %file.'),
-          $this->incrementAndGetCounts($sandbox, 'created') + array(
+          $this->getCounts($sandbox, 'created') + array(
             '%file' => $this->source['object_info']['xml'],
           ),
           WATCHDOG_ERROR,
