@@ -310,7 +310,7 @@ EOQ;
       );
     }
 
-    if ($type) {
+    if ($type_to_increment) {
       $sandbox['counts'][$type_to_increment]++;
     }
 
