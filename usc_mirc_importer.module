@@ -48,7 +48,17 @@ function usc_mirc_importer_menu() {
 function usc_mirc_importer_access_callback(AbstractObject $object) {
   global $user;
 
-  return ($user->uid === 1 || in_array('administrator', $user->roles)) &&
+  // Allowed management in XACML by default, so should be able to update
+  // records.
+  $allowed_roles = array(
+    'administrator',
+    'Creator',
+    'Editor',
+    'Manager',
+  );
+
+  return ($user->uid === 1 ||
+    (count(array_intersect($allowed_roles, $user->roles)) > 0)) &&
     in_array('usc:collectionCModel', $object->models);
 }
 
