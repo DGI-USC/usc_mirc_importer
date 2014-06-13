@@ -45,7 +45,7 @@ function usc_mirc_importer_menu() {
  * Needs to be an admin (to be able to update things with XACML) and one of our
  * special collection objects.
  */
-function usc_mirc_importer_access_callback(AbstractObject $object) {
+function usc_mirc_importer_access_callback($object) {
   global $user;
 
   // Allowed management in XACML by default, so should be able to update
@@ -57,7 +57,8 @@ function usc_mirc_importer_access_callback(AbstractObject $object) {
     'Manager',
   );
 
-  return ($user->uid === 1 ||
+
+  return ($object instanceof AbstractObject) && ($user->uid === 1 ||
     (count(array_intersect($allowed_roles, $user->roles)) > 0)) &&
     in_array('usc:collectionCModel', $object->models);
 }
