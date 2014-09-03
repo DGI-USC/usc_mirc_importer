@@ -93,6 +93,13 @@ class USCMIRCBatchImportObject extends ZipBatchImportObject {
   /**
    * {@inheritdoc}
    */
+  public function getWrapperClass() {
+    return 'USCMIRCBatchObject';
+  }
+
+  /**
+   * {@inheritdoc}
+   */
   public function getTitle() {
     // Get the title for this object (From the PBCore?).
     if ($this->title === NULL) {
@@ -194,7 +201,7 @@ class USCMIRCBatchImportObject extends ZipBatchImportObject {
   /**
    * Get the munge_fm_key identifier.
    */
-  protected function getMungeKey() {
+  public function getMungeKey() {
     if ($this->mungeKey === NULL) {
       try {
         $s_xml = $this->getPBCoreSimpleXMLElement();
@@ -235,7 +242,7 @@ class USCMIRCBatchImportObject extends ZipBatchImportObject {
    * @return AbstractObject|bool
    *   The loaded object, or boolean FALSE if we could not find a match.
    */
-  protected function mungeKeyExists(&$errors = NULL) {
+  public function mungeKeyExists(&$errors = NULL) {
     $content_model = reset($this->contentModel);
 
     $key = $this->getMungeKey();
@@ -441,5 +448,143 @@ EOQ;
     }
 
     return $report;
+  }
+}
+
+class USCMIRCBatchObject extends IslandoraImporterBatchObject {
+  const FAKE_PID_PREFIX = 'usc-mirc-fake-pid';
+
+  /**
+   * Constructor.
+   */
+  public function __construct(IslandoraTuque $connection, IslandoraImportObject $object, &$preprocessor_parameters = array()) {
+    parent::__construct(NULL, $connection->repository, $preprocessor_parameters);
+    if (!isset($preprocessor_parameters['usc_mirc_info'])) {
+      $preprocessor_parameters['usc_mirc_info'] = array(
+        'time' = time(),
+        'count' = 0,
+      );
+    }
+    $this->id = t('!prefix-!time-!count', array(
+      '!prefix' => static::FAKE_PID_PREFIX,
+      '!time' => $preprocessor_parameters['usc_mirc_info']['time'],
+      '!count' => $preprocessor_parameters['usc_mirc_info']['count']++,
+    );
+  }
+
+  public function batchProcess() {
+    $report = array();
+    $to_return = ISLANDORA_BATCH_STATE__DONE;
+
+    // Check if the object exists, based on the munge key.
+    $object = $this->importerObjectInstance->mungeKeyExists($report);
+    $source = $this->importerObjectInstance->getSource();
+
+    if ($this->importerObjectInstance->getMungeKey() && $object) {
+      // If it does exist, and we actually had a key to match, update the
+      // label, PBCore and DC on the existing object.
+      try {
+        $object->label = $this->importerObjectInstance->getTitle();
+        $object['PBCORE']->content = $this->importerObjectInstance->getPBCore();
+        $object['DC']->content = $this->importerObjectInstance->getDC();
+        $report[] = array(
+          t('Successfully updated @pid for "@key".'),
+          array(
+            '@pid' => $object->id,
+            '@key' => $this->importerObjectInstance->getMungeKey(),
+          ),
+          WATCHDOG_INFO,
+          l($object->id, "islandora/object/{$object->id}"),
+        );
+      }
+      catch (Exception $e) {
+        $report[] = array(
+          '%type: !message in %function (line %line of %file).',
+          _drupal_decode_exception($e),
+          WATCHDOG_WARNING,
+        );
+        $report[] = array(
+          t('Failed updating @pid from %file.'),
+          array(
+            '@pid' => $object->id,
+            '%file' => $source['object_info']['xml'],
+          ),
+          WATCHDOG_ERROR,
+          l($object->id, "islandora/object/{$object->id}"),
+        );
+      }
+    }
+    else {
+      try {
+        $this->label = $this->importerObjectInstance->getTitle();
+        list($datastreams, $errors, $files) = $this->importerObjectInstance->getDatastreamInfo();
+        foreach ($datastreams as $ds) {
+          $ds_uri = isset($ds['file']) ?
+            $ds['file']->uri :
+            $ds['datastream_file'];
+
+          $datastream = $this->constructDatastream($ds['dsid'], $ds['control_group']);
+          $datastream->label = $ds['label'];
+          $datastream->mimetype = $ds['mimetype'];
+          $datastream->setContentFromFile($ds_uri);
+          $this->ingestDatastream($datastream);
+        }
+
+        $parent = islandora_object_load($this->preprocessorParameters['parent_pid']);
+        if (isset($parent['POLICY']) && !isset($this['POLICY'])) {
+          $this->ingestDatastream($parent['POLICY']);
+        }
+
+        if (!isset($this->id) || strpos($this->id, static::FAKE_PID_PREFIX) === 0) {
+          // No PID, or a fake one allocated... Get a real one!
+          $this->id = $this->repository->api->m->getNextPid('usc');
+        }
+
+        if ($this->importerObjectInstance->getMungeKey()) {
+          $report[] = array(
+            t('Creating @pid for "@key" from %file.'),
+            array(
+              '@pid' => $this->id,
+              '@key' => $this->importerObjectInstance->getMungeKey(),
+              '%file' => $source['object_info']['xml'],
+            ),
+            WATCHDOG_INFO,
+            l($this->id, "islandora/this/{$this->id}"),
+          );
+        }
+        else {
+          $report[] = array(
+            t('Creating @pid for %file, which is missing a munge key.'),
+            array(
+              '@pid' => $this->id,
+              '%file' => $source['object_info']['xml'],
+            ),
+            WATCHDOG_WARNING,
+            l($this->id, "islandora/this/{$this->id}"),
+          );
+        }
+      }
+      catch (Exception $e) {
+        $to_return = ISLANDORA_BATCH_STATE__ERROR;
+        $report[] = array(
+          '%type: !message in %function (line %line of %file).',
+          _drupal_decode_exception($e),
+          WATCHDOG_WARNING,
+        );
+        $report[] = array(
+          t('Failed creating new object from %file.'),
+          array(
+          '%file' => $source['object_info']['xml'],
+          ),
+          WATCHDOG_ERROR,
+        );
+      }
+    }
+
+    foreach ($report as $message) {
+      call_user_func_array('watchdog', $message);
+    }
+
+    return $to_return;
   }
 }
