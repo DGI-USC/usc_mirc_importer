@@ -474,6 +474,12 @@ class USCMIRCBatchObject extends IslandoraImporterBatchObject {
     ));
   }
 
+  /**
+   * {@inheritdoc}
+   *
+   * Additionally, we handle the case of updating existing object, in the case
+   * one already exists, as identifier by the "munge" key.
+   */
   public function batchProcess() {
     $report = array();
     $to_return = ISLANDORA_BATCH_STATE__DONE;
@@ -579,7 +585,7 @@ class USCMIRCBatchObject extends IslandoraImporterBatchObject {
         $report[] = array(
           t('Failed creating new object from %file.'),
           array(
-          '%file' => $source['object_info']['xml'],
+            '%file' => $source['object_info']['xml'],
           ),
           WATCHDOG_ERROR,
         );
