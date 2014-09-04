@@ -292,24 +292,23 @@ EOQ;
 
 class USCMIRCBatchObject extends IslandoraImporterBatchObject {
   const FAKE_PID_PREFIX = 'usc-mirc-fake-pid';
+  protected static $time = NULL;
+  protected static $count = 0;
 
   /**
    * Constructor.
    */
-  public function __construct(IslandoraTuque $connection, IslandoraImportObject $object, &$preprocessor_parameters = array()) {
+  public function __construct(IslandoraTuque $connection, IslandoraImportObject $object, $preprocessor_parameters = array()) {
     parent::__construct($connection, $object, $preprocessor_parameters);
-    if (!isset($preprocessor_parameters['usc_mirc_info'])) {
-      $preprocessor_parameters['usc_mirc_info'] = array(
-        'time' => time(),
-        'count' => 0,
-      );
-    }
     global $user;
+    if (static::$time === NULL) {
+      static::$time = time();
+    }
     $this->id = t('!prefix-!time-!uid:!count', array(
       '!prefix' => static::FAKE_PID_PREFIX,
-      '!time' => $preprocessor_parameters['usc_mirc_info']['time'],
+      '!time' => static::$time,
       '!uid' => $user->uid,
-      '!count' => $preprocessor_parameters['usc_mirc_info']['count']++,
+      '!count' => static::$count++,
     ));
   }
 
