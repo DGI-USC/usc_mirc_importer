@@ -458,18 +458,20 @@ class USCMIRCBatchObject extends IslandoraImporterBatchObject {
    * Constructor.
    */
   public function __construct(IslandoraTuque $connection, IslandoraImportObject $object, &$preprocessor_parameters = array()) {
-    parent::__construct(NULL, $connection->repository, $preprocessor_parameters);
+    parent::__construct($connection, $object, $preprocessor_parameters);
     if (!isset($preprocessor_parameters['usc_mirc_info'])) {
       $preprocessor_parameters['usc_mirc_info'] = array(
-        'time' = time(),
-        'count' = 0,
+        'time' => time(),
+        'count' => 0,
       );
     }
-    $this->id = t('!prefix-!time-!count', array(
+    global $user;
+    $this->id = t('!prefix-!time-!uid:!count', array(
       '!prefix' => static::FAKE_PID_PREFIX,
       '!time' => $preprocessor_parameters['usc_mirc_info']['time'],
+      '!uid' => $user->uid,
       '!count' => $preprocessor_parameters['usc_mirc_info']['count']++,
-    );
+    ));
   }
 
   public function batchProcess() {
@@ -487,6 +489,9 @@ class USCMIRCBatchObject extends IslandoraImporterBatchObject {
         $object->label = $this->importerObjectInstance->getTitle();
         $object['PBCORE']->content = $this->importerObjectInstance->getPBCore();
         $object['DC']->content = $this->importerObjectInstance->getDC();
+
+        // Need to avoid ingesting this object...
+        $to_return = ISLANDORA_BATCH_STATE__NOT_READY;
         $report[] = array(
           t('Successfully updated @pid for "@key".'),
           array(
@@ -549,7 +554,7 @@ class USCMIRCBatchObject extends IslandoraImporterBatchObject {
               '%file' => $source['object_info']['xml'],
             ),
             WATCHDOG_INFO,
-            l($this->id, "islandora/this/{$this->id}"),
+            l($this->id, "islandora/object/{$this->id}"),
           );
         }
         else {
@@ -560,7 +565,7 @@ class USCMIRCBatchObject extends IslandoraImporterBatchObject {
               '%file' => $source['object_info']['xml'],
             ),
             WATCHDOG_WARNING,
-            l($this->id, "islandora/this/{$this->id}"),
+            l($this->id, "islandora/object/{$this->id}"),
           );
         }
       }
@@ -582,6 +587,7 @@ class USCMIRCBatchObject extends IslandoraImporterBatchObject {
     }
 
     foreach ($report as $message) {
+      array_unshift($message, 'usc_mirc_importer');
       call_user_func_array('watchdog', $message);
     }
 
