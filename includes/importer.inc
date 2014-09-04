@@ -314,10 +314,12 @@ class USCMIRCBatchObject extends IslandoraImporterBatchObject {
   }
 
   /**
-   * {@inheritdoc}
+   * Override batch processing function.
    *
-   * Additionally, we handle the case of updating existing object, in the case
-   * one already exists, as identifier by the "munge" key.
+   * We need to handle the case of updating existing objects, as identified by
+   * the "munge" key.
+   *
+   * @see IslandoraImporterBatchObject::batchProcess()
    */
   public function batchProcess() {
     $report = array();
