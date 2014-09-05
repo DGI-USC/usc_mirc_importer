@@ -93,6 +93,13 @@ class USCMIRCBatchImportObject extends ZipBatchImportObject {
   /**
    * {@inheritdoc}
    */
+  public function getWrapperClass() {
+    return 'USCMIRCBatchObject';
+  }
+
+  /**
+   * {@inheritdoc}
+   */
   public function getTitle() {
     // Get the title for this object (From the PBCore?).
     if ($this->title === NULL) {
@@ -194,7 +201,7 @@ class USCMIRCBatchImportObject extends ZipBatchImportObject {
   /**
    * Get the munge_fm_key identifier.
    */
-  protected function getMungeKey() {
+  public function getMungeKey() {
     if ($this->mungeKey === NULL) {
       try {
         $s_xml = $this->getPBCoreSimpleXMLElement();
@@ -235,7 +242,7 @@ class USCMIRCBatchImportObject extends ZipBatchImportObject {
    * @return AbstractObject|bool
    *   The loaded object, or boolean FALSE if we could not find a match.
    */
-  protected function mungeKeyExists(&$errors = NULL) {
+  public function mungeKeyExists(&$errors = NULL) {
     $content_model = reset($this->contentModel);
 
     $key = $this->getMungeKey();
@@ -281,83 +288,79 @@ EOQ;
 
     return FALSE;
   }
+}
+
+class USCMIRCBatchObject extends IslandoraImporterBatchObject {
+  const FAKE_PID_PREFIX = 'usc-mirc-fake-pid';
+  protected static $time = NULL;
+  protected static $count = 0;
 
   /**
-   * Convenience function to update and get the values for substitution.
-   *
-   * @param array $sandbox
-   *   The $context['sandbox'] array, where we'll keep our stats.
-   * @param string|bool $type_to_increment
-   *   Either a boolean FALSE to just get the counts without incrementing, or
-   *   a string indicating which value to update in the set:
-   *   - "updated": An integer containing the running count of the number of
-   *     records updated.
-   *   - "created": An integer containing the running count of the number of
-   *     records created.
-   *
-   * @return array
-   *   An associative array containing placeholder substitutions for
-   *   format_string() and associated functions:
-   *   - "@updated": The number updated.
-   *   - "@created": The number created.
-   *   - "@total": The sum of the number updated and created.
+   * Constructor.
    */
-  protected function getCounts(&$sandbox, $type_to_increment = FALSE) {
-    if (!isset($sandbox['counts'])) {
-      $sandbox['counts'] = array(
-        'updated' => 0,
-        'created' => 0,
-      );
+  public function __construct(IslandoraTuque $connection, IslandoraImportObject $object, $preprocessor_parameters = array()) {
+    parent::__construct($connection, $object, $preprocessor_parameters);
+    global $user;
+    if (static::$time === NULL) {
+      static::$time = time();
     }
-
-    if ($type_to_increment) {
-      $sandbox['counts'][$type_to_increment]++;
-    }
-
-    return array(
-      '@updated' => $sandbox['counts']['updated'],
-      '@created' => $sandbox['counts']['created'],
-      '@total' => array_sum($sandbox['counts']),
-    );
+    $this->id = t('!prefix-!time-!uid:!count', array(
+      '!prefix' => static::FAKE_PID_PREFIX,
+      '!time' => static::$time,
+      '!uid' => $user->uid,
+      '!count' => static::$count++,
+    ));
   }
 
   /**
-   * {@inheritdoc}
+   * Override batch processing function.
+   *
+   * We need to handle the case of updating existing objects, as identified by
+   * the "munge" key.
+   *
+   * @see IslandoraImporterBatchObject::batchProcess()
    */
-  public function writeToFedora($pid, $parent_pid, &$sandbox) {
+  public function batchProcess() {
     $report = array();
+    $to_return = ISLANDORA_BATCH_STATE__READY;
 
     // Check if the object exists, based on the munge key.
-    $object = $this->mungeKeyExists($report);
+    $object = $this->importerObjectInstance->mungeKeyExists($report);
+    $source = $this->importerObjectInstance->getSource();
 
-    if ($this->getMungeKey() && $object) {
+    if ($this->importerObjectInstance->getMungeKey() && $object) {
       // If it does exist, and we actually had a key to match, update the
       // label, PBCore and DC on the existing object.
       try {
-        $object->label = $this->getTitle();
-        $object['PBCORE']->content = $this->getPBCore();
-        $object['DC']->content = $this->getDC();
+        $object->label = $this->importerObjectInstance->getTitle();
+        $object['PBCORE']->content = $this->importerObjectInstance->getPBCore();
+        $object['DC']->content = $this->importerObjectInstance->getDC();
+
+        // Need to avoid ingesting this object...
+        $to_return = ISLANDORA_BATCH_STATE__NOT_READY;
         $report[] = array(
-          t('(@created/@updated/@total) Successfully updated @pid for "@key".'),
-          $this->getCounts($sandbox, 'updated') + array(
+          t('Successfully updated @pid for "@key".'),
+          array(
             '@pid' => $object->id,
-            '@key' => $this->getMungeKey(),
+            '@key' => $this->importerObjectInstance->getMungeKey(),
           ),
           WATCHDOG_INFO,
           l($object->id, "islandora/object/{$object->id}"),
         );
       }
       catch (Exception $e) {
+        // Need to avoid ingesting this object...
+        $to_return = ISLANDORA_BATCH_STATE__ERROR;
         $report[] = array(
           '%type: !message in %function (line %line of %file).',
           _drupal_decode_exception($e),
           WATCHDOG_WARNING,
         );
         $report[] = array(
-          t('(@created/@updated/@total) Failed updating @pid from %file.'),
-          $this->getCounts($sandbox, 'updated') + array(
+          t('Failed updating @pid from %file.'),
+          array(
             '@pid' => $object->id,
-            '%file' => $this->source['object_info']['xml'],
+            '%file' => $source['object_info']['xml'],
           ),
           WATCHDOG_ERROR,
           l($object->id, "islandora/object/{$object->id}"),
@@ -365,81 +368,78 @@ EOQ;
       }
     }
     else {
-      // If it does not, create a new object (as per the parent
-      // implementation?).
-      // An array of Drupal file objects to clean up after ingest.
-      $files = array();
-
       try {
-        $label = $this->getTitle();
-        $datastreams = $this->getDatastreams($report, $files);
+        $this->label = $this->importerObjectInstance->getTitle();
+        list($datastreams, $errors, $files) = $this->importerObjectInstance->getDatastreamInfo();
+        foreach ($datastreams as $ds) {
+          $ds_uri = isset($ds['file']) ?
+            $ds['file']->uri :
+            $ds['datastream_file'];
 
-        $relationships = array();
-
-        $content_models = array_unique((array) $this->contentModel);
-
-        $collection_pid = $parent_pid;
-        $relationships[] = array(
-          'relationship' => 'isMemberOfCollection',
-          'pid' => $parent_pid,
-        );
-        module_load_include('inc', 'islandora', 'includes/utilities');
-        $object = islandora_prepare_new_object($pid, $label,
-                  $datastreams, $content_models, $relationships, $collection_pid);
-
-        $object = islandora_add_object($object);
-
-        $parent = islandora_object_load($collection_pid);
-        if (isset($parent['POLICY']) && !isset($object['POLICY'])) {
-          $object->ingestDatastream($parent['POLICY']);
+          $datastream = $this->constructDatastream($ds['dsid'], $ds['control_group']);
+          $datastream->label = $ds['label'];
+          $datastream->mimetype = $ds['mimetype'];
+          $datastream->setContentFromFile($ds_uri);
+          $this->ingestDatastream($datastream);
         }
 
-        if ($this->getMungeKey()) {
+        $parent = islandora_object_load($this->preprocessorParameters['parent_pid']);
+        if (isset($parent['POLICY']) && !isset($this['POLICY'])) {
+          $this->ingestDatastream($parent['POLICY']);
+        }
+
+        if (!isset($this->id) || strpos($this->id, static::FAKE_PID_PREFIX) === 0) {
+          // No PID, or a fake one allocated... Get a real one!
+          $this->id = $this->repository->api->m->getNextPid('usc');
+        }
+
+        if ($this->importerObjectInstance->getMungeKey()) {
           $report[] = array(
-            t('(@created/@updated/@total) Successfully created @pid for "@key" from %file.'),
-            $this->getCounts($sandbox, 'created') + array(
-              '@pid' => $object->id,
-              '@key' => $this->getMungeKey(),
-              '%file' => $this->source['object_info']['xml'],
+            t('Creating @pid for "@key" from %file.'),
+            array(
+              '@pid' => $this->id,
+              '@key' => $this->importerObjectInstance->getMungeKey(),
+              '%file' => $source['object_info']['xml'],
             ),
             WATCHDOG_INFO,
-            l($object->id, "islandora/object/{$object->id}"),
+            l($this->id, "islandora/object/{$this->id}"),
           );
         }
         else {
           $report[] = array(
-            t('(@created/@updated/@total) Created @pid for %file, which is missing a munge key.'),
-            $this->getCounts($sandbox, 'created') + array(
-              '@pid' => $object->id,
-              '%file' => $this->source['object_info']['xml'],
+            t('Creating @pid for %file, which is missing a munge key.'),
+            array(
+              '@pid' => $this->id,
+              '%file' => $source['object_info']['xml'],
             ),
             WATCHDOG_WARNING,
-            l($object->id, "islandora/object/{$object->id}"),
+            l($this->id, "islandora/object/{$this->id}"),
           );
         }
+        $to_return = ISLANDORA_BATCH_STATE__DONE;
       }
       catch (Exception $e) {
+        $to_return = ISLANDORA_BATCH_STATE__ERROR;
         $report[] = array(
           '%type: !message in %function (line %line of %file).',
           _drupal_decode_exception($e),
           WATCHDOG_WARNING,
         );
         $report[] = array(
-          t('(@created/@updated/@total) Failed creating new object from %file.'),
-          $this->getCounts($sandbox, 'created') + array(
-            '%file' => $this->source['object_info']['xml'],
+          t('Failed creating new object from %file.'),
+          array(
+            '%file' => $source['object_info']['xml'],
           ),
           WATCHDOG_ERROR,
         );
       }
-
-      foreach ($files as $file) {
-        if ($file) {
-          file_delete($file);
-        }
-      }
     }
 
-    return $report;
+    foreach ($report as $message) {
+      array_unshift($message, 'usc_mirc_importer');
+      call_user_func_array('watchdog', $message);
+    }
+
+    return $to_return;
   }
 }
