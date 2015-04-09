@@ -72,3 +72,17 @@ function usc_mirc_importer_form_islandora_importer_form_alter(&$form, &$form_sta
     $form_state['storage']['options'] = array_intersect_key($form_state['storage']['options'], $good_one);
   }
 }
+
+/**
+ * Implements hook_islandora_batch_process_finished().
+ */
+function usc_mirc_importer_islandora_batch_process_finished($sets) {
+  if (user_access('access site reports')) {
+    drupal_set_message(
+      t(
+        'Review <a href="@link">watchdog</a> for some additional information.',
+        array('@link' => url('admin/reports/dblog'))
+      )
+    );
+  }
+}
